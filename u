@@ -7,6 +7,7 @@ from hexdump import hexdump
 from importlib import import_module
 import termios, os, subprocess
 from time import time, sleep
+import re
 
 fancy_input = True
 
@@ -1018,6 +1019,11 @@ def setup_scope(scope):
     scope.set('decode', decode)
     
     scope.set('sleep', sleep)
+    
+    def matches(txt, regex):
+        return bool(re.fullmatch(regex, txt))
+    
+    scope.set('matches', matches)
     
     def system(cmd, inp=None):
         if isinstance(inp, str):
