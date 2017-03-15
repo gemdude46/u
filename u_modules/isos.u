@@ -1,0 +1,10 @@
+module isos {
+  os = $$(['uname']).outstr
+  ostype = $OSTYPE
+  func isLinux() {
+    return os == 'Linux'
+  }
+  func isMacOS() {
+    return os == 'Darwin'
+  }
+}
