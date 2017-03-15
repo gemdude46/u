@@ -1,0 +1,4 @@
+if $('git add *') == 0
+    if $('git commit -m push') == 0
+        if $('git push') == 0
+            echo('Pushed!')

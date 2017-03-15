@@ -1,0 +1,1117 @@
+#!/usr/bin/env python3
+
+from fractions import Fraction
+from sys import argv, stdin, stdout, stderr
+from types import FunctionType, BuiltinFunctionType
+from hexdump import hexdump
+from importlib import import_module
+import termios, os, subprocess
+from time import time, sleep
+
+fancy_input = True
+
+upaths = os.environ.get('U_PATH')
+
+if upaths:
+    upaths = upaths.split(':')
+else:
+    upaths = []
+
+upaths.append('/usr/lib/u_modules/')
+
+def cmp(a, b):
+    return (a > b) - (a < b)
+
+class URuntimeException(Exception): pass
+
+matchestypesccache = {}
+
+def matchestypesc(pt):
+    
+    pt = list(pt.replace(' ',''))
+    
+def matchestypes(obj, pt):
+    
+    if pt not in matchestypesccache:
+        matchestypesccache[pt] = matchestypesc(pt)
+        
+    matchestypesr(matchestypesccache[pt])
+
+def getline(cantypec=lambda c,p:True):
+    if not fancy_input:
+        i = input()
+        for p, c in enumerate(i):
+            if not cantypec(c, p):
+                print("Invalid input!")
+                return getline(cantypec)
+        return i
+    stdout.flush()
+    oldattrs = termios.tcgetattr(stdin)
+    newattrs = oldattrs[:]
+    newattrs[3] &= ~termios.ICANON & ~termios.ECHO
+    try:
+        termios.tcsetattr(stdin, termios.TCSAFLUSH, newattrs)
+        s = ''
+        p = 0
+        while True:
+            c = stdin.read(1)
+            if c == '\n':
+                print()
+                return s
+            
+            if p:
+                stdout.write('\x1B[%iD' % p)
+            
+            stdout.write('\x1B[K')
+            
+            if c == '\x7f':
+                if p:
+                    s = s[:p-1] + s[p:]
+                    p-=1
+            elif c == '\t':
+                w = 8*(1+p//8)-p
+                s = s[:p] + ' '*w + s[p:]
+                p += w
+            elif c == '\x1B':
+                c = stdin.read(1)
+                if c == '[':
+                    c = stdin.read(1)
+                    if c == 'C':
+                        p = min(p+1, len(s))
+                    elif c == 'D':
+                        p = max(p-1, 0)
+                    
+                elif c == 'O':
+                    c = stdin.read(1)
+                    if c == 'F':
+                        p = len(s)
+                    if c == 'H':
+                        p = 0
+            elif c == '\x04':
+                raise EOFError('^D')
+            elif cantypec(c,p):
+                s = s[:p] + c + s[p:]
+                p+=1
+                
+            stdout.write(s)
+
+            if p!=len(s):
+                stdout.write('\x1B[%iD' % (len(s)-p))
+            stdout.flush()
+            
+    finally:
+        termios.tcsetattr(stdin, termios.TCSAFLUSH, oldattrs)
+
+class Token(object):
+    def __init__(self, t, d=None):
+        self.t=t
+        self.d=d
+    
+    def __repr__(self):
+        if self.d is None:
+            return 'Token(%r)' % self.t
+        else:
+            return 'Token(%r, %r)' % (self.t, self.d)
+
+def can_part_id(c):
+    return c in '1234567890' or can_start_id(c)
+
+def can_start_id(c):
+    return ord(c) > 127 or c in 'qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM$_'
+
+def lex(code):
+    
+    symbols = (
+        '->',
+        '>>',
+        '<<',
+        '**',
+        '++',
+        '--',
+        '==',
+        '!=',
+        '<=',
+        '>=',
+        '\\',
+        '>',
+        '<',
+        '+',
+        '-',
+        '*',
+        '/',
+        '%',
+        '(',
+        ')',
+        '{',
+        '}',
+        '[',
+        ']',
+        '=',
+        '.',
+        ',',
+        ';',
+    )
+    
+    keywords = (
+        'break',
+        'catch',
+        'class',
+        'continue',
+        'else',
+        'expand',
+        'false',
+        'for',
+        'from',
+        'func',
+        'if',
+        'import',
+        'module',
+        'NULL',
+        'of',
+        'return',
+        'to',
+        'true',
+        'try',
+        'while',
+        '_PYTHON'
+    )
+    
+    tokens = []
+    
+    cp = 0
+    
+    while cp < len(code):
+        
+        if code[cp] in ' \n\r\t\v':
+            cp += 1
+            continue
+        
+        if can_start_id(code[cp]):
+            s = ''
+            while cp < len(code) and can_part_id(code[cp]):
+                s += code[cp]
+                cp += 1
+            
+            if s in keywords:
+                tokens.append(Token(s))
+            else:
+                tokens.append(Token('id', s))
+            
+            continue
+        
+        if code[cp] in '12345678990':
+            s = ''
+            while cp < len(code) and code[cp] in "1234567890xeE'.":
+                s += code[cp]
+                cp += 1
+            
+            tokens.append(Token('nbr', Fraction(s.replace("'",''))))
+            
+            continue
+        
+        if code[cp] in '\'"«`':
+            q = '»' if code[cp] == '«' else code[cp]
+            cp += 1
+            s = ''
+            while q != code[cp]:
+                if code[cp] == '\\' and q != '`':
+                    cp += 1
+                    if code[cp] == 'n':
+                        s += '\n'
+                    if code[cp] == 'r':
+                        s += '\r'
+                    if code[cp] == 't':
+                        s += '\t'
+                    if code[cp] == 'b':
+                        s += '\b'
+                    if code[cp] == 'v':
+                        s += '\v'
+                    if code[cp] == '\\':
+                        s += '\\'
+                    if code[cp] in '\'»"«`':
+                        s += code[cp]
+                    if code[cp] == 'x':
+                        s += chr(int(code[cp+1:cp+3], 16))
+                        cp += 2
+                else: 
+                    s += code[cp]
+                cp += 1
+                
+                if cp == len(code):
+                    raise EOFError('EOF encountered whilst parsing string literal')
+            
+            cp += 1
+            
+            tokens.append(Token('str', s))
+            
+            continue
+        
+        symfound = False
+        for s in symbols:
+            if code[cp:len(s)+cp] == s:
+                tokens.append(Token(s))
+                cp += len(s)
+                symfound = True
+                break
+        
+        if symfound:
+            continue
+        
+        raise ValueError('Unexpected character %r (0x%X)' % (code[cp], ord(code[cp])))
+    
+    tokens.append(Token('EOF'))
+    
+    return tokens
+
+
+def ind(l,i):
+    if isinstance(l, list) or isinstance(l, str):
+            
+        if not isinstance(i, Fraction) or i.denominator != 1:
+            raise URuntimeException('Indices must be integer')
+        
+        return l[i.numerator % len(l)]
+    
+    if isinstance(l, dict):
+        
+        try:
+            return l[i]
+        except KeyError:
+            raise URuntimeException('Object does not have property %s' % stringify(i))
+    
+    if isinstance(l, bytes):
+        
+        if not isinstance(i, Fraction) or i.denominator != 1:
+            raise URuntimeException('Indices must be integer')
+        
+        return Fraction(l[i.numerator % len(l)])
+    
+    raise URuntimeException('Type is not item-accessable')
+
+def ittr(x):
+    return x
+
+def isfunc(x):
+    return isinstance(x, UFunction) or isinstance(x, FunctionType) or isinstance(x, BuiltinFunctionType)
+
+def callf(f, a):
+    return f.call(a) if isinstance(f, UFunction) else f(*a)
+
+class UReturnValue(Exception):          # Abusy Abusy Python
+    def __init__(self, val):
+        self.val = val
+
+class UFunction(object):
+    def __init__(self, scope, args, code):
+        self.scope = scope
+        self.args = args
+        self.code = code
+    
+    def call(self, args):
+        scope = Scope(self.scope)
+        
+        if len(args) > len(self.args):
+            raise URuntimeException('Too many arguments passed to function')
+        
+        for i in range(len(args)):
+            scope.set(self.args[i][0], args[i])
+        
+        for i in range(len(args), len(self.args)):
+            if self.args[i][1]:
+                raise URuntimeException('Too few arguments passed to function')
+            else:
+                scope.set(self.args[i][0], self.args[i][2].e(scope))
+        
+        try:
+            self.code.e(scope)
+        except UReturnValue as e:
+            return e.val
+
+class ASTNode(object):
+    def __init__(self, *a):
+        self.a = a
+    
+    def e(self, scope):
+        raise TypeError('Abstract ASTNode evaluated')
+    
+    def __repr__(self):
+        return self.__class__.__name__ + repr(self.a)
+
+class ASTNodeBlock(ASTNode):
+    def e(self, scope):
+        v = None
+        for s in self.a[0]:
+            v = s.e(scope)
+        return v
+
+class ASTNodeWhile(ASTNode):
+    def e(self, scope):
+        while truthy(self.a[0].e(scope)):
+            self.a[1].e(scope)
+
+class ASTNodeIf(ASTNode):
+    def e(self, scope):
+        if truthy(self.a[0].e(scope)):
+            self.a[1].e(scope)
+        else:
+            self.a[2].e(scope)
+
+class ASTNodeConst(ASTNode):
+    def e(self, scope):
+        return self.a[0]
+
+class ASTNodeList(ASTNode):
+    def e(self, scope):
+        return [i.e(scope) for i in self.a[0]]
+
+class ASTNodeTo(ASTNode):
+    def e(self, scope):
+        a = self.a[0].e(scope)
+        if a.denominator != 1:
+            raise URuntimeException('Range endpoint must be integer')
+        a = a.numerator
+        
+        b = self.a[1].e(scope)
+        if b.denominator != 1:
+            raise URuntimeException('Range endpoint must be integer')
+        b = b.numerator
+        
+        c = cmp(b, a)
+        
+        if c == 0:
+            return [Fraction(a)]
+        
+        return [Fraction(i) for i in range(a, b+c, c)]
+
+class ASTNodeAdd(ASTNode):
+    def e(self, scope):
+        a, b = self.a[0].e(scope), self.a[1].e(scope)
+        if isinstance(a, Fraction) and isinstance(b, Fraction):
+            return a+b
+        
+        return stringify(a) + stringify(b)
+
+class ASTNodeSub(ASTNode):
+    def e(self, scope):
+        return self.a[0].e(scope) - self.a[1].e(scope)
+
+class ASTNodeMul(ASTNode):
+    def e(self, scope):
+        return self.a[0].e(scope) * self.a[1].e(scope)
+
+class ASTNodeDiv(ASTNode):
+    def e(self, scope):
+        a, b = self.a[0].e(scope), self.a[1].e(scope)
+        if isinstance(a, Fraction) and isinstance(b, Fraction):
+            return a/b
+        
+        if isfunc(a) and isinstance(b, list):
+            return [callf(a, [i]) for i in ittr(b)]
+        
+        raise URuntimeException('Cannot divide type %s by type %s' % (type(a).__name__, type(b).__name__))
+
+class ASTNodeMod(ASTNode):
+    def e(self, scope):
+        return self.a[0].e(scope) % self.a[1].e(scope)
+
+class ASTNodeExp(ASTNode):
+    def e(self, scope):
+        return Fraction(self.a[0].e(scope) ** self.a[1].e(scope))
+
+class ASTNodeNeg(ASTNode):
+    def e(self, scope):
+        return -self.a[0].e(scope)
+
+class ASTNodeInd(ASTNode):
+    def e(self, scope):
+        
+        l = self.a[0].e(scope)
+        i = self.a[1].e(scope)
+        
+        return ind(l,i)
+
+class ASTNodeOf(ASTNode):
+    def e(self, scope):
+        
+        i = self.a[0].e(scope)
+        o = self.a[1].e(scope)
+        
+        a = [ind(o, r) for r in ittr(i)]
+        
+        if isinstance(o, str):
+            return ''.join(a)
+        
+        return a
+            
+
+class ASTNodeVar(ASTNode):
+    def e(self, scope):
+        return scope.get(self.a[0])
+
+class ASTNodeAsgn(ASTNode):
+    def e(self, scope):
+        if isinstance(self.a[0], ASTNodeVar):
+            return scope.set(self.a[0].a[0], self.a[1].e(scope))
+        elif isinstance(self.a[0], ASTNodeInd):
+            l = self.a[0].a[0].e(scope)
+            i = self.a[0].a[1].e(scope)
+            
+            if isinstance(l, list):
+                if i.denominator != 1:
+                    raise URuntimeException('Indices must be integer')
+                    
+                v = self.a[1].e(scope)
+                l[i.numerator % len(l)] = v
+                return v
+            
+            else:
+                raise URuntimeException('Unable to assign value to item')
+        else:
+            raise URuntimeException('Cannot assign value to %s' % self.a[0].__class__.__name__)
+
+class ASTNodeCmp(ASTNode):
+    def e(self, scope):
+        v = [i.e(scope) for i in self.a[0]]
+        
+        for i in range(len(v)-1):
+            if cmp(v[i], v[1+i]) not in self.a[1][i]:
+                return False
+        
+        return True
+
+class ASTNodeCall(ASTNode):
+    def e(self, scope):
+        f = self.a[0].e(scope)
+        args = [a.e(scope) for a in self.a[1]]
+        if isfunc(f):
+            return callf(f, args)
+        else:
+            raise URuntimeException('Cannot call type %s' % type(f).__name__)
+
+class ASTNodeThrough(ASTNode):
+    def e(self, scope):
+        i = self.a[1].e(scope)
+        
+        for v in ittr(i):
+            scope.set(self.a[0], v)
+            self.a[2].e(scope)
+
+class ASTNodeModule(ASTNode):
+    def e(self, scope):
+        isc = Scope(scope)
+        self.a[0].e(isc)
+        m = isc.vars
+        m['type~'] = 'Module'
+        return m
+
+class ASTNodeImport(ASTNode):
+    def e(self, scope):
+        f = None
+        
+        totry = [self.a[0], self.a[0]+'.u']
+        
+        for p in upaths:
+            totry.append(os.path.join(p, self.a[0]))
+            totry.append(os.path.join(p, self.a[0] + '.u'))
+        
+        for p in totry:
+            try:
+                f = open(p, 'r')
+                break
+            except Exception:
+                pass
+        
+        if f is None:
+            raise URuntimeException('Unable to load module %s' % self.a[0])
+        
+        code = f.read()
+        f.close()
+        
+        tokens = lex(code)
+        root = parse(tokens)
+        root.e(scope)
+
+class ASTNodeUFunctionGenerator(ASTNode):
+    def e(self, scope):
+        return UFunction(scope, self.a[0], self.a[1])
+
+class ASTNodeReturn(ASTNode):
+    def e(self, scope):
+        raise UReturnValue(self.a[0].e(scope))
+
+class ASTNodeExecPython(ASTNode):
+    def e(self, scope):
+        code = self.a[0].e(scope)
+        if not isinstance(code, str):
+            raise URuntimeException('Python code must be string.')
+        
+        exec(code)
+
+tkp = None
+
+def parse(tokens):
+    global tkp
+    
+    tkp = 0
+    
+    def accept(*a):
+        global tkp
+        if tokens[tkp].t in a:
+            return tokens[tkp]
+    
+    def expect(*a):
+        global tkp
+        if tokens[tkp].t in a:
+            tkp += 1
+            return tokens[tkp-1]
+        
+        raise ValueError('Unexpected token %r' % tokens[tkp])
+    
+    def accpect(*a):
+        global tkp
+        if tokens[tkp].t in a:
+            tkp += 1
+            return tokens[tkp-1]
+    
+
+    def parseStmts():
+        stmts = []
+        while not accept('}', 'EOF'):
+            stmt = parseStmt()
+            if not (isinstance(stmt, ASTNodeConst) and stmt.a[0] is None):
+                stmts.append(stmt)
+        return stmts
+    
+    def parseStmt():
+    
+        if accpect(';'):
+            return ASTNodeConst(None)
+        
+        if accpect('{'):
+            s = parseStmts()
+            expect('}')
+            return ASTNodeBlock(s)
+        
+        if accpect('while'):
+            cond = parseExpr()
+            stmt = parseStmt()
+            return ASTNodeWhile(cond, stmt)
+            
+        if accpect('if'):
+            cond = parseExpr()
+            stmt = parseStmt()
+            if accpect('else'):
+                els = parseStmt()
+            else:
+                els = ASTNodeConst(None)
+            return ASTNodeIf(cond, stmt, els)
+        
+        if accpect('for'):
+            v = expect('id').d
+            if accpect('from'):
+                i = parseExpr()
+                return ASTNodeThrough(v, i, parseStmt())
+            expect('for loop')
+        
+        if accpect('import'):
+            return ASTNodeImport(expect('str', 'id').d)
+        
+        if accpect('return'):
+            return ASTNodeReturn(parseExpr())
+        
+        if accpect('module'):
+            as2 = None
+            if accept('id'):
+                as2 = expect('id').d
+            
+            m = ASTNodeModule(parseStmt())
+            
+            if as2 is None:
+                return m
+            else:
+                return ASTNodeAsgn(ASTNodeVar(as2), m)
+        
+        if accpect('_PYTHON'):
+            return ASTNodeExecPython(parseExpr())
+        
+        return parseExpr()
+    
+    def parseExpr():
+        return parseExprAsgn()
+    
+    def parseExprAsgn():
+        c = parseExprCmp()
+        if accpect('='):
+            c = ASTNodeAsgn(c, parseExprAsgn())
+        return c
+    
+    def parseExprCmp():
+        c = []
+        s = []
+        while True:
+            c.append(parseExprOf())
+            if not accept('<','<=','==','>=','>','!='):
+                break
+            s.append({
+                '<': (-1,),
+                '<=': (-1,0),
+                '==': (0,),
+                '>=': (0,1),
+                '>': (1,),
+                '!=': (-1,1)
+            }[expect('<','<=','==','>=','>','!=').t])
+            
+        if not s:
+            return c[0]
+        else:
+            return ASTNodeCmp(c, s)
+    
+    def parseExprOf():
+        c = parseExprTo()
+        if accpect('of'):
+            c = ASTNodeOf(c, parseExprTo())
+        return c
+    
+    def parseExprTo():
+        c = parseExprAS()
+        if accpect('to'):
+            c = ASTNodeTo(c, parseExprAS())
+        return c
+    
+    def parseExprAS():
+        c = parseExprMDM()
+        while accept('+','-'):
+            c = (ASTNodeAdd if expect('+','-').t == '+' else ASTNodeSub)(c, parseExprMDM())
+        return c
+    
+    def parseExprMDM():
+        c = parseExprExp()
+        while accept('*','/','%'):
+            c = ({
+                '*': ASTNodeMul,
+                '/': ASTNodeDiv,
+                '%': ASTNodeMod
+            }[expect('*','/','%').t])(c, parseExprExp())
+        return c
+    
+    def parseExprExp():
+        c = parseExprCh()
+        if accpect('**'):
+            c = ASTNodeExp(c, parseExprExp())
+        return c
+    
+    def parseExprCh():
+        c = parseExprC()
+        while accept('(','[','.'):
+            if accpect('('):
+                a = []
+                while not accpect(')'):
+                    a.append(parseExpr())
+                    accpect(',')
+                c = ASTNodeCall(c, a)
+                continue
+                
+            if accpect('['):
+                while not accpect(']'):
+                    c = ASTNodeInd(c, parseExpr())
+                    accpect(',')
+                continue
+            
+            if accpect('.'):
+                c = ASTNodeInd(c, ASTNodeConst(expect('id').d))
+                continue
+        return c
+    
+    def parseExprC():
+        
+        if accpect('+'):
+            return parseExprC()
+        
+        if accpect('-'):
+            return ASTNodeNeg(parseExprC())
+        
+        if accpect('('):
+            n = parseExpr()
+            expect(')')
+            return n
+        
+        if accpect('['):
+            a = []
+            while not accpect(']'):
+                a.append(parseExpr())
+                accpect(',')
+            return ASTNodeList(a)
+        
+        if accept('nbr', 'str'):
+            return ASTNodeConst(expect('nbr', 'str').d)
+            
+        if accept('id'):
+            return ASTNodeVar(expect('id').d)
+        
+        if accpect('NULL'):
+            return ASTNodeConst(None)
+        
+        if accpect('true'):
+            return ASTNodeConst(True)
+        
+        if accpect('false'):
+            return ASTNodeConst(False)
+        
+        if accpect('to'):
+            return ASTNodeTo(ASTNodeConst(Fraction(0)), parseExprAS())
+        
+        #if accpect('++'):
+        
+        if accpect('func'):
+            as2 = None
+            if accept('id'):
+                as2 = ASTNodeVar(expect('id').d)
+            
+            a = []
+            if accpect('('):
+                while not accpect(')'):
+                    e = parseExpr()
+                    if isinstance(e, ASTNodeVar):
+                        a.append((e.a[0], True))
+                    elif isinstance(e, ASTNodeAsgn) and isinstance(e.a[0], ASTNodeVar):
+                        a.append((e.a[0].a[0], False, e.a[1]))
+                    else:
+                        raise TypeError('Invalid type for function parameter: %r' % e)
+                        
+                    accpect(',')
+            
+            n = ASTNodeUFunctionGenerator(a, parseStmt())
+            
+            if as2:
+                return ASTNodeAsgn(as2, n)
+            else:
+                return n
+            
+        if accpect('\\'):
+            a = []
+            while not accpect('->'):
+                e = parseExpr()
+                if isinstance(e, ASTNodeVar):
+                    a.append((e.a[0], True))
+                elif isinstance(e, ASTNodeAsgn) and isinstance(e.a[0], ASTNodeVar):
+                    a.append((e.a[0].a[0], False, e.a[1]))
+                else:
+                    raise TypeError('Invalid type for function parameter: %r' % e)
+                    
+                accpect(',')
+            
+            return ASTNodeUFunctionGenerator(a, ASTNodeReturn(parseExpr()))
+        
+        expect('expression')
+    
+    root = ASTNodeBlock(parseStmts())
+    
+    expect('EOF')
+    
+    return root
+
+modules_d = {}
+def get_module(m):
+    if m in modules_d:
+        return modules_d[m]
+    else:
+        try:
+            M = modules_d[m] = import_module(m)
+            return M
+        except ImportError:
+            raise URuntimeException('This feature requires the python 3 module "%s" which is currently not installed.' % m)
+
+def stringify(obj):
+    
+    if obj is None:
+        return 'NULL'
+    
+    if isinstance(obj, Fraction):
+        return str(obj.numerator) if obj.denominator == 1 else '%i/%i' % (obj.numerator, obj.denominator)
+    
+    if isinstance(obj, bytes):
+        return hexdump(obj, result='return')
+    
+    if isinstance(obj, list):
+        return '[%s]' % ','.join([stringify(i) for i in obj])
+    
+    if isinstance(obj, bool):
+        return 'true' if obj else 'false'
+    
+    if isinstance(obj, dict):
+        s = '%s:\n' % obj.get('type~', 'Object')
+        for k in obj.keys():
+            if (
+                not isinstance(obj[k], UFunction)
+                and not isinstance(obj[k], FunctionType)
+                and not (
+                    isinstance(k, str)
+                    and k.endswith('~')
+                )
+            ):
+                s += '\t%s: %s\n' % (stringify(k), stringify(obj[k]))
+        
+        return s
+    
+    if isfunc(obj):
+        return 'function(...)'
+    
+    return str(obj)
+
+def truthy(obj):
+    
+    if isinstance(obj, Fraction):
+        return obj.numerator != 0
+    
+    return bool(obj)
+
+def run_console(scope):
+    while True:
+        try:
+            code = ''
+            code_done = False
+            while not code_done:
+                try:
+                    print('...' if code else '>>>', end=' ')
+                    code += getline()
+                except EOFError:
+                    print('\nQuitting!')
+                    return
+                
+                code_done = True
+                
+                try:
+                    tokens = lex(code)
+                    root = parse(tokens)
+                except Exception as e:
+                    code_done = False
+                    if "Token('EOF')" in str(e):
+                        code += '\n'
+                    else:
+                        print('ERROR: %s' % str(e))
+                        break
+            
+            if code_done:
+                try:
+                    result = root.e(scope)
+                except Exception as e:
+                    print('ERROR: %s' % str(e))
+                    continue
+                
+                if result != None:
+                    print(stringify(result))
+                
+                scope.set('ANS', result)
+                
+        except KeyboardInterrupt:
+            print('\nInterrupted. Use ^D to quit.')
+
+class Scope(object):
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.vars = {}
+    
+    def get(self, k):
+        if k in self.vars:
+            return self.vars[k]
+        elif self.parent is not None:
+            return self.parent.get(k)
+        else:
+            raise URuntimeException('Variable %s referenced but not defined' % k)
+    
+    def set(self, k, v):
+        self.vars[k] = v
+        return v
+
+def setup_scope(scope):
+    def echo(*a):
+        print(''.join([stringify(i) for i in a]))
+    
+    scope.set('echo', echo)
+    
+    def readText(*a):
+        print(''.join([stringify(i) for i in a]), end='')
+        return getline()
+        
+    scope.set('read', readText)
+    scope.set('readText', readText)
+    
+    def readInt(*a):
+        print(''.join([stringify(i) for i in a]), end='')
+        return Fraction(getline(lambda c,p:c in '1234567890' or (p == 0 and c == '-')))
+        
+    scope.set('readInt', readInt)
+    
+    def cat(fn, ms=-1):
+        try:
+            f = open(fn, 'r')
+            if ms < 0:
+                c = f.read()
+            else:
+                if ms.denominator != 1:
+                    raise URuntimeException('Read amount must be integer')
+                c = f.read(ms.numerator)
+            f.close()
+            return c
+        except FileNotFoundError:
+            raise URuntimeException('Unable to find file %s' % fn)
+        except PermissionError:
+            raise URuntimeException('Not permitted to read file %s' % fn)
+        except UnicodeDecodeError:
+            raise URuntimeException('File %s did not contain text' % fn)
+    
+    scope.set('cat', cat)
+    
+    def bincat(fn, ms=-1):
+        try:
+            f = open(fn, 'rb')
+            if ms < 0:
+                c = f.read()
+            else:
+                if ms.denominator != 1:
+                    raise URuntimeException('Read amount must be integer')
+                c = f.read(ms.numerator)
+            f.close()
+            return c
+        except FileNotFoundError:
+            raise URuntimeException('Unable to find file %s' % fn)
+        except PermissionError:
+            raise URuntimeException('Not permitted to read file %s' % fn)
+        
+    
+    scope.set('bincat', bincat)
+    
+    def cd(nwd=None):
+        
+        if nwd is None:
+            nwd = os.environ.get('HOME','/')
+        
+        os.chdir(nwd)
+    
+    scope.set('cd', cd)
+    
+    scope.set('cwd', os.getcwd)
+    
+    scope.set('ls', os.listdir)
+    
+    scope.set('length', len)
+    scope.set('size', len)
+    
+    def split(s, on=None):
+        return s.split(on)
+    
+    scope.set('split', split)
+    
+    def join(l, w=''):
+        return w.join(l)
+    
+    scope.set('join', join)
+    
+    def encode(s, e='UTF8'):
+        return s.encode(e)
+    
+    scope.set('encode', encode)
+    
+    def decode(b, e='UTF8'):
+        return b.decode(e)
+    
+    scope.set('decode', decode)
+    
+    scope.set('sleep', sleep)
+    
+    def system(cmd, inp=None):
+        if isinstance(inp, str):
+            inp = inp.encode('UTF8')
+        
+        proc = subprocess.Popen(
+            cmd,
+            shell=isinstance(cmd, str),
+            stdin=(None if inp is None else subprocess.PIPE)
+        )
+        
+        proc.communicate(inp)
+        
+        return Fraction(proc.returncode)
+    
+    def system2(cmd, inp=None):
+        if isinstance(inp, str):
+            inp = inp.encode('UTF8')
+            
+        proc = subprocess.Popen(
+            cmd,
+            shell=isinstance(cmd, str),
+            stdin=(None if inp is None else subprocess.PIPE),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        outbs, errbs = proc.communicate(inp)
+        
+        outstr = errstr = None
+        
+        try:
+            outstr = outbs.decode('UTF8')
+        except UnicodeDecodeError:
+            pass
+        
+        try:
+            errstr = errbs.decode('UTF8')
+        except UnicodeDecodeError:
+            pass
+        
+        return {
+            'type~':'ProgramReturnStatus',
+            'outbs':outbs,
+            'errbs':errbs,
+            'outstr':outstr,
+            'errstr':errstr,
+            'rc': Fraction(proc.returncode)
+        }
+    
+    scope.set('$', system)
+    scope.set('$$', system2)
+    
+    for var in os.environ:
+        scope.set('$%s' % var, os.environ[var])
+
+if __name__ == '__main__':
+    if '-v' in argv or '--version' in argv:
+        print('u version cd/0')
+    
+    else:
+        files = []
+        allow_dashed = False
+        for a in argv[1:]:
+            if a == '--':
+                allow_dashed = True
+            elif not a.startswith('-'):
+                files.append(a)
+            elif a == '-':
+                files.append('./-' if allow_dashed else a)
+        
+        scope = Scope()
+        setup_scope(scope)
+        
+        if files:
+            code = ''
+            for f in files:
+                if f == '-':
+                    code += stdin.read()
+                else:
+                    fo = open(f, 'r')
+                    code += fo.read() + '\n'
+                    fo.close()
+            
+            try:
+                tokens = lex(code)
+                root = parse(tokens)
+                root.e(scope)
+                
+                if '-c' in argv:
+                    run_console(scope)
+            except Exception as e:
+                print('ERROR: %s' % str(e))
+            
+        
+        else:
+            run_console(scope)
