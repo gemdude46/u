@@ -1,0 +1,6 @@
+
+module t2s {
+    func say(text) {
+        $(['espeak'], text)
+    }
+}

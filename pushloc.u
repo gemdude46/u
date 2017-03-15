@@ -1,0 +1,7 @@
+if $USER != 'gemdude46'
+    echo('Sry ur not me')
+else {
+    $('cp u $HOME/bin/u')
+    $('sudo rm -r /usr/lib/u_modules')
+    $('sudo cp -r u_modules /usr/lib/u_modules')
+}

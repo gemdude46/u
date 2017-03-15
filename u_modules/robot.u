@@ -1,0 +1,25 @@
+
+module robot {
+
+_PYTHON `
+
+globals()['M_ROBOT_LAG'] = 0.03
+
+def setLag(l):
+    global M_ROBOT_LAG
+    M_ROBOT_LAG = l
+
+scope.set('type', lambda t: get_module('pyautogui').typewrite(t, M_ROBOT_LAG))
+scope.set(
+    'hotkey',
+    lambda k: get_module('pyautogui').hotkey(
+        *(k if isinstance(k, list) else [
+            i.strip().lower() for i in k.split('+')
+        ]), interval=M_ROBOT_LAG
+    )
+)
+scope.set('setLag', setLag)
+
+`
+
+}
