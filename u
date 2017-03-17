@@ -9,7 +9,7 @@ import termios, os, subprocess
 from time import time, sleep
 import re
 
-fancy_input = True
+fancy_input = os.environ.get('U_FANCYINPUT', 'y').startswith('y')
 
 upaths = os.environ.get('U_PATH')
 
@@ -133,7 +133,10 @@ def lex(code):
         '!=',
         '<=',
         '>=',
+        '&&',
+        '||',
         '\\',
+        '!',
         '>',
         '<',
         '+',
@@ -151,6 +154,8 @@ def lex(code):
         '.',
         ',',
         ';',
+        '?',
+        ':'
     )
     
     keywords = (
@@ -293,10 +298,10 @@ def ittr(x):
     return x
 
 def isfunc(x):
-    return isinstance(x, UFunction) or isinstance(x, FunctionType) or isinstance(x, BuiltinFunctionType)
+    return isinstance(x, UFunction) or isinstance(x, FunctionType) or isinstance(x, BuiltinFunctionType) or isinstance(x, UClass)
 
-def callf(f, a):
-    return f.call(a) if isinstance(f, UFunction) else f(*a)
+def callf(f, a, o=None):
+    return f.call(a, o) if isinstance(f, UFunction) else (f.construct(a) if isinstance(f, UClass) else f(*a))
 
 class UReturnValue(Exception):          # Abusy Abusy Python
     def __init__(self, val):
@@ -308,8 +313,10 @@ class UFunction(object):
         self.args = args
         self.code = code
     
-    def call(self, args):
+    def call(self, args, this):
         scope = Scope(self.scope)
+        
+        scope.set('this', this)
         
         if len(args) > len(self.args):
             raise URuntimeException('Too many arguments passed to function')
@@ -327,6 +334,21 @@ class UFunction(object):
             self.code.e(scope)
         except UReturnValue as e:
             return e.val
+
+class UClass(object):
+    def __init__(self, scope, code, parent):
+        if parent is not None:
+            pass
+        
+        self.scope = Scope(scope)
+        
+        code.e(self.scope)
+        
+    def construct(self, a):
+        o = {'type~': 'Instance'}
+        for v in self.scope.vars:
+            o[v] = self.scope.vars[v]
+        return o
 
 class ASTNode(object):
     def __init__(self, *a):
@@ -365,8 +387,15 @@ class ASTNodeList(ASTNode):
     def e(self, scope):
         return [i.e(scope) for i in self.a[0]]
 
-class ASTNodeTo(ASTNode):
+class ASTNodeObject(ASTNode):
     def e(self, scope):
+        o = {}
+        for k,v in self.a[0]:
+            o[k.e(scope)] = v.e(scope)
+        return o
+
+class ASTNodeTo(ASTNode):
+    def e(self, scope, gen=False):
         a = self.a[0].e(scope)
         if a.denominator != 1:
             raise URuntimeException('Range endpoint must be integer')
@@ -382,7 +411,10 @@ class ASTNodeTo(ASTNode):
         if c == 0:
             return [Fraction(a)]
         
-        return [Fraction(i) for i in range(a, b+c, c)]
+        if gen:
+            return (Fraction(i) for i in range(a, b+c, c))
+        else:
+            return [Fraction(i) for i in range(a, b+c, c)]
 
 class ASTNodeAdd(ASTNode):
     def e(self, scope):
@@ -423,13 +455,17 @@ class ASTNodeNeg(ASTNode):
     def e(self, scope):
         return -self.a[0].e(scope)
 
-class ASTNodeInd(ASTNode):
+class ASTNodeNot(ASTNode):
     def e(self, scope):
+        return not truthy(self.a[0].e(scope))
+
+class ASTNodeInd(ASTNode):
+    def e(self, scope, retthis = False):
         
         l = self.a[0].e(scope)
         i = self.a[1].e(scope)
         
-        return ind(l,i)
+        return (l, ind(l,i)) if retthis else ind(l,i)
 
 class ASTNodeOf(ASTNode):
     def e(self, scope):
@@ -465,6 +501,11 @@ class ASTNodeAsgn(ASTNode):
                 l[i.numerator % len(l)] = v
                 return v
             
+            if isinstance(l, dict):
+                v = self.a[1].e(scope)
+                l[i] = v
+                return v
+            
             else:
                 raise URuntimeException('Unable to assign value to item')
         else:
@@ -482,18 +523,23 @@ class ASTNodeCmp(ASTNode):
 
 class ASTNodeCall(ASTNode):
     def e(self, scope):
-        f = self.a[0].e(scope)
+        m = False
+        if isinstance(self.a[0], ASTNodeInd):
+            o, f = self.a[0].e(scope, True)
+            m = True
+        else:
+            f = self.a[0].e(scope)
         args = [a.e(scope) for a in self.a[1]]
         if isfunc(f):
-            return callf(f, args)
+            return callf(f, args, o if m else None)
         else:
             raise URuntimeException('Cannot call type %s' % type(f).__name__)
 
 class ASTNodeThrough(ASTNode):
     def e(self, scope):
-        i = self.a[1].e(scope)
+        i = self.a[1].e(scope, True) if isinstance(self.a[1], ASTNodeTo) else ittr(self.a[1].e(scope))
         
-        for v in ittr(i):
+        for v in i:
             scope.set(self.a[0], v)
             self.a[2].e(scope)
 
@@ -536,6 +582,10 @@ class ASTNodeUFunctionGenerator(ASTNode):
     def e(self, scope):
         return UFunction(scope, self.a[0], self.a[1])
 
+class ASTNodeClassGenerator(ASTNode):
+    def e(self, scope):
+        return UClass(scope, self.a[0], self.a[1])
+
 class ASTNodeReturn(ASTNode):
     def e(self, scope):
         raise UReturnValue(self.a[0].e(scope))
@@ -547,6 +597,21 @@ class ASTNodeExecPython(ASTNode):
             raise URuntimeException('Python code must be string.')
         
         exec(code)
+
+class ASTNodeTernary(ASTNode):
+    def e(self, scope):
+        if truthy(self.a[0].e(scope)):
+            return self.a[1].e(scope)
+        else:
+            return self.a[2].e(scope)
+
+class ASTNodeErrors(ASTNode):
+    def e(self, scope):
+        try:
+            self.a[0].e(scope)
+            return True
+        except URuntimeException:
+            return False
 
 tkp = None
 
@@ -703,7 +768,7 @@ def parse(tokens):
     
     def parseExprCh():
         c = parseExprC()
-        while accept('(','[','.'):
+        while accept('(','[','.','?'):
             if accpect('('):
                 a = []
                 while not accpect(')'):
@@ -721,6 +786,13 @@ def parse(tokens):
             if accpect('.'):
                 c = ASTNodeInd(c, ASTNodeConst(expect('id').d))
                 continue
+            
+            if accpect('?'):
+                y = parseExpr()
+                expect(':')
+                n = parseExpr()
+                c = ASTNodeTernary(c, y, n)
+                continue
         return c
     
     def parseExprC():
@@ -730,6 +802,9 @@ def parse(tokens):
         
         if accpect('-'):
             return ASTNodeNeg(parseExprC())
+        
+        if accpect('!'):
+            return ASTNodeNot(parseExprCmp())
         
         if accpect('('):
             n = parseExpr()
@@ -762,6 +837,21 @@ def parse(tokens):
             return ASTNodeTo(ASTNodeConst(Fraction(0)), parseExprAS())
         
         #if accpect('++'):
+        
+        if accpect('?'):
+            x = parseExprCh()
+            return ASTNodeErrors(x)
+        
+        if accpect('{'):
+            pairs = []
+            while not accpect('}'):
+                k = parseExpr()
+                expect(':')
+                v = parseExpr()
+                accpect(',')
+                pairs.append((k,v))
+            
+            return ASTNodeObject(pairs)
         
         if accpect('func'):
             as2 = None
@@ -802,6 +892,22 @@ def parse(tokens):
                 accpect(',')
             
             return ASTNodeUFunctionGenerator(a, ASTNodeReturn(parseExpr()))
+        
+        if accpect('class'):
+            as2 = None
+            if accept('id'):
+                as2 = ASTNodeVar(expect('id').d)
+            
+            extends = None
+            if accpect(':'):
+                extends = parseExpr()
+            
+            c = ASTNodeClassGenerator(parseStmt(), extends)
+            
+            if as2:
+                return ASTNodeAsgn(as2, c)
+            else:
+                return c
         
         expect('expression')
     
@@ -937,6 +1043,14 @@ def setup_scope(scope):
     scope.set('read', readText)
     scope.set('readText', readText)
     
+    def uchr(c):
+        if c.denominator != 1:
+            raise URuntimeException('Character value must be integer')
+        
+        return chr(c.numerator)
+    
+    scope.set('uchr', uchr)
+    
     def readInt(*a):
         print(''.join([stringify(i) for i in a]), end='')
         return Fraction(getline(lambda c,p:c in '1234567890' or (p == 0 and c == '-')))
@@ -995,8 +1109,16 @@ def setup_scope(scope):
     
     scope.set('ls', os.listdir)
     
-    scope.set('length', len)
-    scope.set('size', len)
+    def flen(x):
+        return Fraction(len(x))
+    
+    scope.set('length', flen)
+    scope.set('size', flen)
+    
+    def rmnulls(l):
+        return [i for i in l if i is not None]
+        
+    scope.set('rmnulls', rmnulls)
     
     def split(s, on=None):
         return s.split(on)

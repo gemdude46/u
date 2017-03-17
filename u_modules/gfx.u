@@ -1,0 +1,8 @@
+class GFXSurface {
+    
+    func fill(col) {
+        for i from 0 to this.width
+            for j from 0 to this.height
+                setpxl((i,j), col)
+    }
+}

@@ -1,0 +1,11 @@
+for i from 0 to (131072 / 8)
+    echo(
+        uchr(i*8), '\t',
+        uchr(i*8+1), '\t',
+        uchr(i*8+2), '\t',
+        uchr(i*8+3), '\t',
+        uchr(i*8+4), '\t',
+        uchr(i*8+5), '\t',
+        uchr(i*8+6), '\t',
+        uchr(i*8+7)
+    )
