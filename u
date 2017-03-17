@@ -21,7 +21,10 @@ else:
 upaths.append('/usr/lib/u_modules/')
 
 def cmp(a, b):
-    return (a > b) - (a < b)
+    try:
+        return (a > b) - (a < b)
+    except TypeError:
+        return 42
 
 class URuntimeException(Exception): pass
 
@@ -336,18 +339,26 @@ class UFunction(object):
             return e.val
 
 class UClass(object):
-    def __init__(self, scope, code, parent):
+    def __init__(self, scope, name, code, parent):
         if parent is not None:
             pass
+        
+        self.name = name
         
         self.scope = Scope(scope)
         
         code.e(self.scope)
         
     def construct(self, a):
-        o = {'type~': 'Instance'}
+        o = {'type~': self.name}
         for v in self.scope.vars:
             o[v] = self.scope.vars[v]
+            
+        if 'constructor' in o:
+            callf(o['constructor'], a, o)
+        elif a:
+            raise URuntimeException('Too many arguments passed to constructor')
+            
         return o
 
 class ASTNode(object):
@@ -584,7 +595,7 @@ class ASTNodeUFunctionGenerator(ASTNode):
 
 class ASTNodeClassGenerator(ASTNode):
     def e(self, scope):
-        return UClass(scope, self.a[0], self.a[1])
+        return UClass(scope, self.a[2], self.a[0], self.a[1])
 
 class ASTNodeReturn(ASTNode):
     def e(self, scope):
@@ -724,7 +735,7 @@ def parse(tokens):
                 '==': (0,),
                 '>=': (0,1),
                 '>': (1,),
-                '!=': (-1,1)
+                '!=': (-1,1,42)
             }[expect('<','<=','==','>=','>','!=').t])
             
         if not s:
@@ -902,7 +913,7 @@ def parse(tokens):
             if accpect(':'):
                 extends = parseExpr()
             
-            c = ASTNodeClassGenerator(parseStmt(), extends)
+            c = ASTNodeClassGenerator(parseStmt(), extends, as2.a[0] if as2 else 'Instance')
             
             if as2:
                 return ASTNodeAsgn(as2, c)

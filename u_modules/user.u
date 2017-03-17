@@ -1,0 +1,10 @@
+class User {
+    func constructor (un = $USER) {
+        this.name = un
+        
+        this.uid = $$(['id', '-u', un]).outstr
+        this.gid = $$(['id', '-g', un]).outstr
+        
+        this.su = this.superuser = (this.gid == 0)
+    }
+}
