@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 from fractions import Fraction
-from sys import argv, stdin, stdout, stderr
-from types import FunctionType, BuiltinFunctionType
 from hexdump import hexdump
 from importlib import import_module
 import termios, os, subprocess
 from time import time, sleep
 import re
+import shutil
+from sys import argv, stdin, stdout, stderr
+from types import FunctionType, BuiltinFunctionType
 
 fancy_input = os.environ.get('U_FANCYINPUT', 'y').startswith('y')
 
@@ -24,7 +25,7 @@ def cmp(a, b):
     try:
         return (a > b) - (a < b)
     except TypeError:
-        return 42
+        return 0 if a == b else 42
 
 class URuntimeException(Exception): pass
 
@@ -1104,7 +1105,7 @@ def setup_scope(scope):
         except PermissionError:
             raise URuntimeException('Not permitted to read file %s' % fn)
         
-    
+        
     scope.set('bincat', bincat)
     
     def cd(nwd=None):
@@ -1119,6 +1120,44 @@ def setup_scope(scope):
     scope.set('cwd', os.getcwd)
     
     scope.set('ls', os.listdir)
+    
+    def chmod(path, mode):
+        
+        if isinstance(mode, Fraction): mode = str(mode)
+        
+        rc = subprocess.call(['chmod', '-f', mode, path])
+        
+        if rc != 0:
+            raise URuntimeException('Unable to change permissions of %s to %r' % (path, mode))
+    
+    scope.set('chmod', chmod)
+    
+    def chmodr(path, mode):
+        
+        if isinstance(mode, Fraction): mode = str(mode)
+        
+        rc = subprocess.call(['chmod', '-R', '-f', mode, path])
+        
+        if rc != 0:
+            raise URuntimeException('Unable to change permissions of %s to %r' % (path, mode))
+    
+    scope.set('chmodr', chmodr)
+    
+    def rm(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            raise URuntimeException('Unable to remove %s' % path)
+    
+    scope.set('rm', rm)
+    
+    def rmr(path):
+        try:
+            (shutil.rmtree if os.path.isdir(path) else os.unlink)(path)
+        except OSError:
+            raise URuntimeException('Unable to remove %s' % path)
+    
+    scope.set('rmr', rmr)
     
     def flen(x):
         return Fraction(len(x))
@@ -1212,6 +1251,7 @@ def setup_scope(scope):
     
     for var in os.environ:
         scope.set('$%s' % var, os.environ[var])
+        
 
 if __name__ == '__main__':
     if '-v' in argv or '--version' in argv:
